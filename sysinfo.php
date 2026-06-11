@@ -1,18 +1,18 @@
 <?php
-/**
- * System & IP Information Inspector
- * Gathers all available client, network, and browser data.
- */
+// Quick tool I put together to see everything I can about whoever's hitting the page.
+// Pulls IP info, geo, ISP, browser details, and a bunch of JS-side stuff like
+// screen size, battery, fonts, etc. Handy for debugging and just general curiosity.
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
+// just a shorthand so I don't type htmlspecialchars a hundred times
 function h(string $s): string {
     return htmlspecialchars($s, ENT_QUOTES, 'UTF-8');
 }
 
 function getClientIp(): string {
+    // check all the usual suspects in order - Cloudflare first since it
+    // replaces REMOTE_ADDR, then proxies, then fall back to the real thing
     $headers = [
-        'HTTP_CF_CONNECTING_IP',   // Cloudflare
+        'HTTP_CF_CONNECTING_IP',
         'HTTP_X_REAL_IP',
         'HTTP_X_FORWARDED_FOR',
         'HTTP_X_FORWARDED',
@@ -38,12 +38,13 @@ function parseUserAgent(string $ua): array {
     $os       = 'Unknown';
     $device   = 'Desktop';
 
-    // Device
+    // iPads report themselves as Mobile too so check for that first
     if (preg_match('/Mobile|Android|iPhone|iPad|iPod/i', $ua)) {
         $device = preg_match('/iPad/i', $ua) ? 'Tablet' : 'Mobile';
     }
 
-    // OS
+    // Windows versioning via NT numbers is kind of a mess but this covers
+    // everything people are realistically still running
     $osList = [
         'Windows 11'     => 'Windows NT 10.0.*Win64',
         'Windows 10'     => 'Windows NT 10.0',
@@ -62,7 +63,7 @@ function parseUserAgent(string $ua): array {
     foreach ($osList as $name => $pattern) {
         if (preg_match('/' . $pattern . '/i', $ua)) {
             $os = $name;
-            // Grab version numbers
+            // pull version where we can - Apple uses underscores instead of dots, annoying
             if ($name === 'Android' && preg_match('/Android ([0-9.]+)/i', $ua, $m)) {
                 $os .= ' ' . $m[1];
             } elseif ($name === 'macOS' && preg_match('/Mac OS X ([0-9_]+)/i', $ua, $m)) {
@@ -74,7 +75,8 @@ function parseUserAgent(string $ua): array {
         }
     }
 
-    // Browser (order matters — Edge/OPR must come before Chrome)
+    // order really matters here - Edge and Opera both have "Chrome" in their UA
+    // so they have to be checked before Chrome or you'll misidentify them
     $browsers = [
         'Edg'     => ['Edge',           '/Edg\/([0-9.]+)/'],
         'OPR'     => ['Opera',          '/OPR\/([0-9.]+)/'],
@@ -96,14 +98,14 @@ function parseUserAgent(string $ua): array {
         }
     }
 
-    // Bot detection
+    // very rough bot check - catches the obvious ones at least
     $isBot = preg_match('/bot|crawl|spider|slurp|mediapartners|bingpreview|facebookexternalhit|ia_archiver|yahoo! slurp/i', $ua);
 
     return compact('browser', 'bVersion', 'os', 'device', 'isBot');
 }
 
 function ipGeoLookup(string $ip): array {
-    // ip-api.com free tier (no key needed, 45 req/min)
+    // using ip-api.com - free, no API key needed, just don't hammer it (45 req/min limit)
     $url  = "http://ip-api.com/json/{$ip}?fields=status,message,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,as,asname,mobile,proxy,hosting,query";
     $ctx  = stream_context_create(['http' => ['timeout' => 4, 'ignore_errors' => true]]);
     $json = @file_get_contents($url, false, $ctx);
@@ -140,7 +142,7 @@ function acceptLanguages(): array {
     return $langs;
 }
 
-// ── Gather data ───────────────────────────────────────────────────────────────
+// --- kick everything off ---
 
 $ip       = getClientIp();
 $uaString = $_SERVER['HTTP_USER_AGENT'] ?? '';
@@ -635,11 +637,12 @@ $host     = $_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? '';
 
 </div>
 
-<!-- ── JavaScript fingerprinting ──────────────────────────────────────────── -->
+<!-- the JS side fills in everything PHP can't see - screen, battery, fonts, etc. -->
 <script>
 (function () {
   "use strict";
 
+  // little helper to avoid repeating getElementById + innerHTML everywhere
   function set(id, val) {
     const el = document.getElementById(id);
     if (el) el.innerHTML = val ?? '<span style="color:var(--muted)">n/a</span>';
@@ -653,7 +656,7 @@ $host     = $_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? '';
 
   function na() { return '<span style="color:var(--muted)">n/a</span>'; }
 
-  // ── Screen ──
+  // screen stuff is easy, all synchronous
   set('scr-resolution', screen.width + ' × ' + screen.height + ' px');
   set('scr-avail',      screen.availWidth + ' × ' + screen.availHeight + ' px');
   set('scr-window',     window.innerWidth + ' × ' + window.innerHeight + ' px');
@@ -662,12 +665,12 @@ $host     = $_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? '';
   set('scr-orient',     screen.orientation ? screen.orientation.type : (screen.width > screen.height ? 'landscape' : 'portrait'));
   set('scr-touch',      navigator.maxTouchPoints ?? 0);
 
-  // ── Hardware ──
+  // hardware concurrency = logical CPU count, deviceMemory is rounded by design (privacy)
   set('hw-threads',  navigator.hardwareConcurrency ?? na());
   set('hw-memory',   navigator.deviceMemory ? navigator.deviceMemory + ' GB' : na());
   set('hw-platform', navigator.platform ?? na());
 
-  // ── Time / Locale ──
+  // wrap timezone stuff in try/catch - Intl can throw on some older browsers
   try {
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
     set('tz-name',   tz);
@@ -679,7 +682,7 @@ $host     = $_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? '';
     set('tz-numfmt', (12345.6).toLocaleString());
   } catch (e) {}
 
-  // ── Network ──
+  // Network Information API - still not in Firefox/Safari so always check first
   const nc = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
   if (nc) {
     set('net-type',   nc.effectiveType ?? na());
@@ -691,7 +694,7 @@ $host     = $_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? '';
   }
   set('net-online', yn(navigator.onLine));
 
-  // ── Capabilities ──
+  // check what the browser supports - some of these APIs are pretty new
   set('cap-cookies', yn(navigator.cookieEnabled));
   try { localStorage.setItem('_t','1'); localStorage.removeItem('_t'); set('cap-ls', yn(true)); } catch { set('cap-ls', yn(false)); }
   try { sessionStorage.setItem('_t','1'); sessionStorage.removeItem('_t'); set('cap-ss', yn(true)); } catch { set('cap-ss', yn(false)); }
@@ -709,7 +712,8 @@ $host     = $_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? '';
   set('cap-speech', yn('speechSynthesis' in window));
   set('cap-media',  yn(!!(navigator.mediaDevices && navigator.mediaDevices.enumerateDevices)));
 
-  // WebGL
+  // WebGL renderer string can reveal the actual GPU model which is pretty cool,
+  // though Firefox blocks it behind a flag now
   try {
     const canvas = document.createElement('canvas');
     const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
@@ -727,7 +731,8 @@ $host     = $_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? '';
     }
   } catch { set('cap-webgl', yn(false)); }
 
-  // Canvas fingerprint hash (simple)
+  // draw some text on a hidden canvas and hash the pixel data - different
+  // GPU/font rendering combos produce slightly different results, makes a decent fingerprint
   try {
     const c = document.createElement('canvas');
     c.width = 200; c.height = 50;
@@ -749,7 +754,8 @@ $host     = $_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? '';
     set('cap-canvas', '0x' + Math.abs(h).toString(16).padStart(8, '0'));
   } catch { set('cap-canvas', na()); }
 
-  // Ad blocker (heuristic)
+  // classic adblock detection trick - inject a div with a class that
+  // ad blockers typically hide, then check if it got collapsed
   const adEl = document.createElement('div');
   adEl.className = 'adsbox';
   adEl.style.cssText = 'position:absolute;left:-9999px;top:-9999px;width:1px;height:1px';
@@ -759,7 +765,7 @@ $host     = $_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? '';
     adEl.remove();
   }, 100);
 
-  // ── Battery ──
+  // Battery API returns a promise - most desktop browsers just return null/unsupported
   if (navigator.getBattery) {
     navigator.getBattery().then(b => {
       set('batt-level',    Math.round(b.level * 100) + '%');
@@ -773,7 +779,7 @@ $host     = $_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? '';
     ['batt-level','batt-charging','batt-chtime','batt-dtime'].forEach(id => set(id, na()));
   }
 
-  // ── Permissions API ──
+  // permissions.query can reject for names the browser doesn't recognize, so catch per-permission
   const perms = [
     'camera','microphone','geolocation','notifications',
     'persistent-storage','clipboard-read','clipboard-write','midi',
@@ -801,7 +807,8 @@ $host     = $_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? '';
     permContainer.innerHTML = '<div class="row"><span class="row-label">Permissions API not supported</span></div>';
   }
 
-  // ── Font probe ──
+  // check which fonts are installed by asking the browser if it can render them
+  // document.fonts.check is way cleaner than the old canvas text-width trick
   const probe = [
     'Arial','Arial Black','Arial Narrow','Calibri','Cambria','Comic Sans MS',
     'Consolas','Courier New','Georgia','Impact','Lucida Console','Lucida Sans Unicode',
@@ -825,7 +832,7 @@ $host     = $_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? '';
     set('fonts-count', na());
   }
 
-  // ── Media Devices ──
+  // enumerateDevices works without permission but won't show device labels until granted
   const devContainer = document.getElementById('devices-list');
   if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
     navigator.mediaDevices.enumerateDevices().then(devices => {
